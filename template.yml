@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: aws-pub-sub-pattern
+
+Globals:
+  Function:
+    Runtime: java11
+    MemorySize: 3072
+    Timeout: 30
+
+  Api:
+    OpenApiVersion: '3.0.1'
+
+Resources:
+  PaymentsAPIGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Name: PaymentsAPIGateway
+
+#Lambda Function
+  Payments:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: Payments
+      Handler: com.ibercode.payment.Payments::handleRequest
+      CodeUri: target/sourceCode.zip
+      Environment:
+        Variables:
+          REGION: !Sub '${AWS::Region}'
+          TOPIC_ARN: !Ref PaymentsSNS
+      Events:
+        Payment:
+          Type: Api
+          Properties:
+            Path: /payments
+            Method: POST
+            RestApiId: !Ref PaymentsAPIGateway
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt PaymentsSNS.TopicName
+
+#Lambda Function
+  Customer:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: Customer
+      Handler: com.ibercode.customer.Customer::handleRequest
+      CodeUri: target/sourceCode.zip
+      Policies:
+        - AmazonDynamoDBFullAccess
+      Environment:
+        Variables:
+          CUSTOMER_TABLE: !Ref CustomerPaymentsDDB
+
+  #Lambda Function
+  Sales:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: Sales
+      Handler: com.ibercode.sales.Sales::handleRequest
+      CodeUri: target/sourceCode.zip
+      Policies:
+        - AmazonDynamoDBFullAccess
+      Environment:
+        Variables:
+          SALES_TABLE: !Ref SalesDynamoDB
+
+# DynamoDB Table
+  CustomerPaymentsDDB:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: CustomerPayments
+      AttributeDefinitions:
+        - AttributeName: paymentId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: paymentId
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+# DynamoDB Table
+  SalesDynamoDB:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: Sales
+      AttributeDefinitions:
+        - AttributeName: saleId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: saleId
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  PaymentsSNS:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: Payments
+      Subscription:
+        - Protocol: lambda
+          Endpoint: !GetAtt Sales.Arn
+        - Protocol: lambda
+          Endpoint: !GetAtt Customer.Arn
+
+  SNSInvokeCustomerLambda:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref Customer
+      Principal: sns.amazonaws.com
+
+  SNSInvokeSalesLambda:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref Sales
+      Principal: sns.amazonaws.com
+
+Outputs:
+  PaymentsEndpoint:
+    Description: API Gateway Payments Endpoint
+    Value:
+      Fn::Sub: https://${PaymentsAPIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/payments
